@@ -1,63 +1,15 @@
 require('dotenv').config();
 const express = require('express');
-const session = require('express-session');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Session setup
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'change-this-secret-in-production',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { 
-    secure: process.env.NODE_ENV === 'production',
-    httpOnly: true,
-    maxAge: 3600000 // 1 hour
-  }
-}));
-
-// Middleware to check if user is authenticated
-function ensureAuthenticated(req, res, next) {
-  if (req.session && req.session.user) {
-    return next();
-  }
-  res.status(403).send('Access denied. Invalid or missing authentication.');
-}
-
-// Function to fetch member data from Topline API
-async function fetchMemberData(contactId) {
-  const token = process.env.TOPLINE_PRIVATE_TOKEN;
-  
-  if (!token) {
-    throw new Error('TOPLINE_PRIVATE_TOKEN not configured');
-  }
-  
-  try {
-    const response = await fetch(
-      `https://services.leadconnectorhq.com/contacts/${contactId}`,
-      {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-          'Authorization': token,  // Changed: removed "Bearer"
-          'Version': '2021-07-28'
-        }
-      }
-    );
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API returned ${response.status}: ${errorText}`);
-    }
-    
-    const data = await response.json();
-    return data;
-  } catch (error) {
-    console.error('Error fetching member data:', error);
-    throw error;
-  }
-}
+// Initialize Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
 // Routes
 
@@ -84,11 +36,11 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Report entry point - receives contact ID from Topline
+// Report entry point - receives email from Topline
 app.get('/report', async (req, res) => {
-  const contactId = req.query.contact_id || req.query.user_id || req.query.id;
+  const email = req.query.email;
   
-  if (!contactId) {
+  if (!email) {
     return res.status(400).send(`
       <!DOCTYPE html>
       <html>
@@ -101,8 +53,8 @@ app.get('/report', async (req, res) => {
       </head>
       <body>
         <div class="error">
-          <h2>Missing Contact Information</h2>
-          <p>No contact ID was provided. Please access this from your Topline member dashboard.</p>
+          <h2>Missing Email Address</h2>
+          <p>No email address was provided. Please access this from your Topline member dashboard.</p>
         </div>
       </body>
       </html>
@@ -110,20 +62,44 @@ app.get('/report', async (req, res) => {
   }
   
   try {
-    // Fetch member data from Topline API
-    const memberData = await fetchMemberData(contactId);
+    console.log('Fetching report for email:', email);
     
-    // Store user info in session
-    req.session.user = {
-      id: memberData.contact?.id || contactId,
-      firstName: memberData.contact?.firstName || 'Member',
-      lastName: memberData.contact?.lastName || '',
-      email: memberData.contact?.email || 'Not provided',
-      phone: memberData.contact?.phone || 'Not provided'
-    };
+    // Query Supabase for the report
+    const { data, error } = await supabase
+      .from(process.env.SUPABASE_TABLE_NAME || 'reports')
+      .select('*')
+      .eq('email', email)
+      .single();
     
-    // Generate and show the report
-    const reportHTML = generateReport(req.session.user, memberData);
+    if (error) {
+      console.error('Supabase error:', error);
+      throw new Error(error.message);
+    }
+    
+    if (!data) {
+      return res.status(404).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Report Not Found</title>
+          <style>
+            body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+            .error { background: #fff3cd; color: #856404; padding: 20px; border-radius: 4px; }
+          </style>
+        </head>
+        <body>
+          <div class="error">
+            <h2>Report Not Found</h2>
+            <p>No report was found for email: ${email}</p>
+            <p>Please contact support if you believe this is an error.</p>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+    
+    // Display the report
+    const reportHTML = generateReport(data);
     res.send(reportHTML);
     
   } catch (error) {
@@ -141,7 +117,7 @@ app.get('/report', async (req, res) => {
       <body>
         <div class="error">
           <h2>Error Loading Report</h2>
-          <p>Unable to retrieve your information. Please try again or contact support.</p>
+          <p>Unable to retrieve your report. Please try again or contact support.</p>
           <p><small>Error: ${error.message}</small></p>
         </div>
       </body>
@@ -151,9 +127,39 @@ app.get('/report', async (req, res) => {
 });
 
 // Function to generate the report HTML
-function generateReport(user, fullData) {
-  const fullName = `${user.firstName} ${user.lastName}`.trim();
+function generateReport(reportData) {
+  const returnUrl = process.env.TOPLINE_RETURN_URL || 'https://yourtoplinesite.com/thank-you';
   
+  // If the database stores complete HTML in a field, use it directly
+  if (reportData.html_content) {
+    // Wrap the stored HTML with Done button
+    return `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Your Report</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+          .report-wrapper { max-width: 1000px; margin: 0 auto; }
+          .done-button-container { text-align: center; padding: 20px; background: white; margin-top: 20px; border-radius: 8px; }
+          .done-button { background: #28a745; color: white; padding: 12px 30px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; text-decoration: none; display: inline-block; }
+          .done-button:hover { background: #218838; }
+        </style>
+      </head>
+      <body>
+        <div class="report-wrapper">
+          ${reportData.html_content}
+          
+          <div class="done-button-container">
+            <a href="${returnUrl}" class="done-button">Done - Return to Dashboard</a>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+  }
+  
+  // Otherwise, build the report from individual fields
   return `
     <!DOCTYPE html>
     <html>
@@ -174,43 +180,19 @@ function generateReport(user, fullData) {
     </head>
     <body>
       <div class="report-container">
-        <h1>Your Personal Report</h1>
+        <h1>${reportData.title || 'Your Personal Report'}</h1>
         
         <div class="user-info">
-          <p><strong>Name:</strong> ${fullName}</p>
-          <p><strong>Email:</strong> ${user.email}</p>
-          <p><strong>Phone:</strong> ${user.phone}</p>
-          <p><strong>Member ID:</strong> ${user.id}</p>
+          <p><strong>Email:</strong> ${reportData.email}</p>
+          <p><strong>Name:</strong> ${reportData.name || reportData.first_name + ' ' + reportData.last_name || 'Member'}</p>
+          <p><strong>Generated:</strong> ${new Date(reportData.created_at || Date.now()).toLocaleDateString()}</p>
         </div>
         
         <div class="report-content">
-          <h2>Report Details</h2>
-          
-          <div class="data-section">
-            <h3>Account Information</h3>
-            <p>Report generated: ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}</p>
-            <p>Status: Active Member</p>
-          </div>
-          
-          <div class="data-section">
-            <h3>Your Data</h3>
-            <p>This is where you would display personalized information, charts, statistics, or other report content specific to ${user.firstName}.</p>
-            
-            <!-- You can access all the data from fullData.contact here -->
-            <!-- Example: Add custom fields, tags, notes, etc. -->
-          </div>
-          
-          <div class="data-section">
-            <h3>Additional Information</h3>
-            <ul>
-              <li>Member since: 2024</li>
-              <li>Account type: Standard</li>
-              <li>Last updated: ${new Date().toLocaleDateString()}</li>
-            </ul>
-          </div>
+          ${reportData.content || reportData.report_content || '<p>Report content goes here.</p>'}
         </div>
         
-        <a href="${process.env.TOPLINE_RETURN_URL || 'javascript:window.close();'}" class="done-button">Done - Return to Dashboard</a>
+        <a href="${returnUrl}" class="done-button">Done - Return to Dashboard</a>
       </div>
     </body>
     </html>
@@ -226,5 +208,5 @@ app.get('/healthz', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Base URL: ${process.env.BASE_URL || 'http://localhost:' + PORT}`);
-  console.log(`Topline token configured: ${process.env.TOPLINE_PRIVATE_TOKEN ? 'Yes' : 'No'}`);
+  console.log(`Supabase configured: ${process.env.SUPABASE_URL ? 'Yes' : 'No'}`);
 });
