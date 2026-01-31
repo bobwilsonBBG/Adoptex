@@ -64,34 +64,63 @@ app.get('/report', async (req, res) => {
   try {
     console.log('Fetching report for email:', email);
     
-    // Query Supabase for the report
+    // Query Supabase for the most recent report for this email
     const { data, error } = await supabase
-      .from(process.env.SUPABASE_TABLE_NAME || 'reports')
-      .select('*')
+      .from('readiness_reports')
+      .select('id, full_name, company, email, report_html, created_at, report_type')
       .eq('email', email)
+      .order('created_at', { ascending: false })
+      .limit(1)
       .single();
     
     if (error) {
       console.error('Supabase error:', error);
+      
+      // If no report found
+      if (error.code === 'PGRST116') {
+        return res.status(404).send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Report Not Found</title>
+            <style>
+              body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
+              .error { background: #fff3cd; color: #856404; padding: 20px; border-radius: 4px; }
+              a { color: #856404; }
+            </style>
+          </head>
+          <body>
+            <div class="error">
+              <h2>Report Not Found</h2>
+              <p>No report was found for email: <strong>${email}</strong></p>
+              <p>Please contact support if you believe this is an error.</p>
+              <p><a href="${process.env.TOPLINE_RETURN_URL || 'javascript:history.back()'}">Return to Dashboard</a></p>
+            </div>
+          </body>
+          </html>
+        `);
+      }
+      
       throw new Error(error.message);
     }
     
-    if (!data) {
+    if (!data || !data.report_html) {
       return res.status(404).send(`
         <!DOCTYPE html>
         <html>
         <head>
-          <title>Report Not Found</title>
+          <title>Report Not Available</title>
           <style>
             body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; }
             .error { background: #fff3cd; color: #856404; padding: 20px; border-radius: 4px; }
+            a { color: #856404; }
           </style>
         </head>
         <body>
           <div class="error">
-            <h2>Report Not Found</h2>
-            <p>No report was found for email: ${email}</p>
-            <p>Please contact support if you believe this is an error.</p>
+            <h2>Report Not Available</h2>
+            <p>Your report is being generated. Please check back shortly.</p>
+            <p><a href="${process.env.TOPLINE_RETURN_URL || 'javascript:history.back()'}">Return to Dashboard</a></p>
           </div>
         </body>
         </html>
@@ -126,73 +155,79 @@ app.get('/report', async (req, res) => {
   }
 });
 
-// Function to generate the report HTML
+// Function to generate the report HTML wrapper
 function generateReport(reportData) {
   const returnUrl = process.env.TOPLINE_RETURN_URL || 'https://yourtoplinesite.com/thank-you';
   
-  // If the database stores complete HTML in a field, use it directly
-  if (reportData.html_content) {
-    // Wrap the stored HTML with Done button
-    return `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Your Report</title>
-        <style>
-          body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-          .report-wrapper { max-width: 1000px; margin: 0 auto; }
-          .done-button-container { text-align: center; padding: 20px; background: white; margin-top: 20px; border-radius: 8px; }
-          .done-button { background: #28a745; color: white; padding: 12px 30px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; text-decoration: none; display: inline-block; }
-          .done-button:hover { background: #218838; }
-        </style>
-      </head>
-      <body>
-        <div class="report-wrapper">
-          ${reportData.html_content}
-          
-          <div class="done-button-container">
-            <a href="${returnUrl}" class="done-button">Done - Return to Dashboard</a>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
-  }
-  
-  // Otherwise, build the report from individual fields
+  // The report_html field contains the complete HTML report
+  // We'll wrap it with a Done button
   return `
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Your Report</title>
+      <title>Report - ${reportData.full_name}</title>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 30px auto; padding: 20px; background: #f5f5f5; }
-        .report-container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        h1 { color: #333; border-bottom: 2px solid #007bff; padding-bottom: 10px; }
-        .user-info { background: #e9ecef; padding: 15px; border-radius: 4px; margin: 20px 0; }
-        .user-info p { margin: 8px 0; }
-        .report-content { margin: 20px 0; line-height: 1.6; }
-        .data-section { margin: 20px 0; }
-        .data-section h3 { color: #555; margin-bottom: 10px; }
-        .done-button { background: #28a745; color: white; padding: 12px 30px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; margin-top: 20px; text-decoration: none; display: inline-block; }
-        .done-button:hover { background: #218838; }
+        body { 
+          font-family: Arial, sans-serif; 
+          margin: 0; 
+          padding: 20px; 
+          background: #f5f5f5; 
+        }
+        .report-wrapper { 
+          max-width: 1200px; 
+          margin: 0 auto; 
+          background: white;
+          padding: 30px;
+          border-radius: 8px;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .done-button-container { 
+          text-align: center; 
+          padding: 30px 20px 20px 20px; 
+          border-top: 2px solid #e9ecef;
+          margin-top: 30px;
+        }
+        .done-button { 
+          background: #28a745; 
+          color: white; 
+          padding: 15px 40px; 
+          border: none; 
+          border-radius: 4px; 
+          cursor: pointer; 
+          font-size: 16px; 
+          text-decoration: none; 
+          display: inline-block;
+          font-weight: bold;
+        }
+        .done-button:hover { 
+          background: #218838; 
+        }
+        .report-meta {
+          background: #e9ecef;
+          padding: 10px 15px;
+          border-radius: 4px;
+          margin-bottom: 20px;
+          font-size: 14px;
+          color: #666;
+        }
       </style>
     </head>
     <body>
-      <div class="report-container">
-        <h1>${reportData.title || 'Your Personal Report'}</h1>
-        
-        <div class="user-info">
-          <p><strong>Email:</strong> ${reportData.email}</p>
-          <p><strong>Name:</strong> ${reportData.name || reportData.first_name + ' ' + reportData.last_name || 'Member'}</p>
-          <p><strong>Generated:</strong> ${new Date(reportData.created_at || Date.now()).toLocaleDateString()}</p>
+      <div class="report-wrapper">
+        <div class="report-meta">
+          Report for: <strong>${reportData.full_name}</strong> | 
+          Company: <strong>${reportData.company || 'N/A'}</strong> | 
+          Type: <strong>${reportData.report_type || 'Standard'}</strong> | 
+          Generated: <strong>${new Date(reportData.created_at).toLocaleDateString()}</strong>
         </div>
         
-        <div class="report-content">
-          ${reportData.content || reportData.report_content || '<p>Report content goes here.</p>'}
-        </div>
+        ${reportData.report_html}
         
-        <a href="${returnUrl}" class="done-button">Done - Return to Dashboard</a>
+        <div class="done-button-container">
+          <a href="${returnUrl}" class="done-button">Done - Return to Dashboard</a>
+        </div>
       </div>
     </body>
     </html>
