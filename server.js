@@ -40,14 +40,15 @@ async function fetchMemberData(contactId) {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
-          'Authorization': `Bearer ${token}`,
+          'Authorization': token,  // Changed: removed "Bearer"
           'Version': '2021-07-28'
         }
       }
     );
     
     if (!response.ok) {
-      throw new Error(`API returned ${response.status}: ${response.statusText}`);
+      const errorText = await response.text();
+      throw new Error(`API returned ${response.status}: ${errorText}`);
     }
     
     const data = await response.json();
